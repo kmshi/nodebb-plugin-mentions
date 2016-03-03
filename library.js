@@ -5,6 +5,7 @@ var	async = module.parent.require('async'),
 	validator = module.parent.require('validator'),
 
 	nconf = module.parent.require('nconf'),
+	db = module.parent.require('./database'),
 	Topics = module.parent.require('./topics'),
 	User = module.parent.require('./user'),
 	Groups = module.parent.require('./groups'),
@@ -35,13 +36,35 @@ Mentions.notify = function(postData) {
 			callback(null, matches);
 		});
 	}
+	
+	function findChildren(uid,arr,callback){
+		db.getSortedSetRevRange('followers:' + uid, 0, -1, function(err, kids) {
+			if (err){
+				return callback(null,arr);
+			}
+			async.eachSeries(kids,function(kid,next){
+				if(kid>uid){
+					arr.push(kid);
+					findChildren(kid,arr,next);
+				}else{
+					next();
+				}
+			},function(err){
+				callback(null,arr);
+			});
+		});
+	}
 
 	var cleanedContent = Mentions.clean(postData.content, true, true, true);
 	var matches = cleanedContent.match(rawRegex);
 
 	if (!matches) {
-		return;
+		matches = [];
 	}
+	//default to send to banzhu for every post
+	if(postData.uid>28) matches.push('@版主');
+	var idxForAll = matches.indexOf('@所有人');
+	if (idxForAll>-1) matches.splice(idxForAll,1);
 
 	var noMentionGroups = ['registered-users', 'guests'];
 
@@ -86,6 +109,14 @@ Mentions.notify = function(postData) {
 			groupsMembers: function(next) {
 				getGroupMemberUids(results.groupRecipients, next);
 			},
+			allChildren: function(next){
+				var allKids = [];
+				if (idxForAll>-1){
+					findChildren(postData.uid,allKids,next);
+				}else{
+					next(null,allKids);
+				}
+			},
 			topicFollowers: function(next) {
 				Topics.getFollowers(postData.tid, next);
 			}
@@ -94,7 +125,7 @@ Mentions.notify = function(postData) {
 				return;
 			}
 
-			var uids = results.uids.concat(results.groupsMembers).filter(function(uid, index, array) {
+			var uids = results.uids.concat(results.groupsMembers,results.allChildren).filter(function(uid, index, array) {
 				return array.indexOf(uid) === index && parseInt(uid, 10) !== parseInt(postData.uid, 10) && results.topicFollowers.indexOf(uid.toString()) === -1;
 			});
 
